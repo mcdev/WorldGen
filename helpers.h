@@ -10,3 +10,6 @@ T clamp(T v, T min, T max) {
 }
 
 struct Color { uint8_t r, g, b, a; };
+
+struct Vec2 { float x, y; };
+struct Vec3 { float x, y, z; };

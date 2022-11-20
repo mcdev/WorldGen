@@ -3,8 +3,40 @@
 #include "world.h"
 #include "helpers.h"
 
-#include <math.h>
+#include <cmath>
+#include <stdio.h>
 
+void raw_write(const char *filename, const std::vector<uint8_t>& data) {
+	FILE *fp = fopen(filename, "wb");
+	if (fp == NULL) {
+        return;
+    }
+
+	fwrite(data.data(), data.size(), 1, fp);
+	fclose(fp);
+}
+
+void tga_write(const char *filename, uint32_t width, uint32_t height, uint8_t *dataBGRA, uint8_t dataChannels=4, uint8_t fileChannels=3)
+{
+	FILE *fp = NULL;
+	// MSVC prefers fopen_s, but it's not portable
+	//fp = fopen(filename, "wb");
+	fp = fopen(filename, "wb");
+	if (fp == NULL) return;
+
+	// You can find details about TGA headers here: http://www.paulbourke.net/dataformats/tga/
+	uint8_t header[18] = { 0,0,2,0,0,0,0,0,0,0,0,0, (uint8_t)(width%256), (uint8_t)(width/256), (uint8_t)(height%256), (uint8_t)(height/256), (uint8_t)(fileChannels*8), 0x20 };
+	fwrite(&header, 18, 1, fp);
+
+	for (uint32_t i = 0; i < width*height; i++)
+	{
+		for (uint32_t b = 0; b < fileChannels; b++)
+		{
+			fputc(dataBGRA[(i*dataChannels) + (b%dataChannels)], fp);
+		}
+	}
+	fclose(fp);
+}
 
 int main(int argc, char** argv) {
 
@@ -14,10 +46,16 @@ int main(int argc, char** argv) {
     World world(w_width, w_height);
     world.init();
     world.compute_rivers_and_lakes();
+    world.compute_areas(256);
 
     // Translates the world's map into an image.
     Color c_land = { 0, 255, 0, 255 };
     Color c_river = { 0, 0, 255, 255 };
+    Color c_rock = { 75, 75, 75, 255 };
+    Color c_shrubland = { 113, 85, 60, 255 };
+    Color c_forest = { 58, 77, 25, 255 };
+    Color c_plain = { 89, 114, 57, 255 };
+    Color c_swamp = { 20, 249, 182, 255 };
     Color c_water;
 
     std::vector<uint8_t> image;
@@ -29,20 +67,59 @@ int main(int argc, char** argv) {
             c_land.r = clamp(altitude * 255.0f, 0.0f, 255.0f);
             c_land.g = c_land.b = c_land.r;
 
-            Tile t = world.at(x, y);
-            if(world.water_at(x, y) != World::k_no_water) {
-                t = Water;
-            }
+            World::Tile t = world.at(x, y);
 
             if(altitude < World::k_lake_altitude) {
-                uint8_t green = 255.0f * fabsf((altitude - World::k_altitude_min) * 3.0f);
+                uint8_t green = 255.0f * fabsf((altitude - World::k_altitude_min) * 1.5f);
                 c_water.b = c_water.b > green ? c_water.b - green : 0;
                 c_water.g = green;
             }
 
+            const World::Area& area = world.get_area(x, y);
+            if(t == World::Soil) {
+                c_land.r = clamp(area.biome / (float)World::Biome::Count * 255.0f, 0.0f, 255.0f);
+                c_land.g = c_land.b = c_land.r;
+
+                switch(area.biome) {
+                    case World::Swamp: {
+                        c_land = c_swamp;
+                        break;
+                    }
+                    case World::Count: {
+                        c_land.r = 1.0f;
+                        c_land.g = c_land.b = 0.0f;
+                        break;
+                    }
+                    case World::Plain: {
+                        c_land = c_plain;
+                        break;
+                    }
+                    case World::Shrubland: {
+                        c_land = c_shrubland;
+                        break;
+                    }
+                    case World::Rocks: {
+                        c_land = c_rock;
+                        break;
+                    }
+                    case World::Forest: {
+                        c_land = c_forest;
+                        break;
+                    }
+                }
+            }
+
+            float h = 0.5f + 0.5f * altitude;
+            //c_land.r = clamp(altitude * 255.0f, 0.0f, 255.0f);
+            const Vec3& normal = world.normal_at(x, y);
+            c_land.r *= normal.z * h;
+            c_land.g *= normal.z * h;
+            c_land.b *= normal.z * h;
+
             switch(t) {
-                case Land: image.push_back(c_land.r); image.push_back(c_land.g); image.push_back(c_land.b); image.push_back(c_land.a); break;
-                case Water: image.push_back(c_water.r); image.push_back(c_water.g); image.push_back(c_water.b); image.push_back(c_water.a); break;
+                case World::Soil: image.push_back(c_land.r); image.push_back(c_land.g); image.push_back(c_land.b); image.push_back(c_land.a); break;
+                case World::Rock: image.push_back(c_rock.r); image.push_back(c_rock.g); image.push_back(c_rock.b); image.push_back(c_rock.a); break;
+                case World::Water: image.push_back(c_water.r); image.push_back(c_water.g); image.push_back(c_water.b); image.push_back(c_water.a); break;
                 default: break;
             }
         }
@@ -51,6 +128,39 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> png;
     unsigned error = lodepng::encode(png, image, w_width, w_height);
     if(!error) lodepng::save_file(png, "world.png");
+
+    // Exports the terrain's height map in raw format.
+    const std::vector<float> altitude_buffer = world.get_altitude_buffer();
+    std::vector<uint8_t> raw_heightmap;
+    raw_heightmap.resize(altitude_buffer.size());
+    uint32_t i = 0;
+    for(uint32_t y = 0; y < w_height; ++y) {
+        for(uint32_t x = 0; x < w_width; ++x) {
+            //raw_heightmap[i] = clamp(255.0f * (altitude_buffer[i] + World::k_altitude_min) / (World::k_altitude_max + World::k_altitude_min), 0.0f, 255.0f);
+            raw_heightmap[i++] = 255.0f * clamp(world.altitude_at(y, x), 0.0f, 1.0f);
+        }
+    }
+    raw_write("heightmap.raw", raw_heightmap);
+
+    // Exports the tiles/height/biomes map.
+    std::vector<uint8_t> biomes_map;
+    Color biome;
+    for(uint32_t y = 0; y < w_height; ++y) {
+        for(uint32_t x = 0; x < w_width; ++x) {
+            auto area = world.get_area(x, y);
+            auto tile = world.at(x, y);
+            biome.r = tile;
+            biome.g = raw_heightmap[y + x * w_width];
+            biome.b = area.biome;
+            biome.a = 255;
+
+            biomes_map.push_back(biome.r);
+            biomes_map.push_back(biome.g);
+            biomes_map.push_back(biome.b);
+            biomes_map.push_back(biome.a);
+        }
+    }
+    raw_write("biomes.bytes", biomes_map);
 
     return 0;
 }
