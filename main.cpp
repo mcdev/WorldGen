@@ -6,6 +6,12 @@
 #include <cmath>
 #include <stdio.h>
 
+float lerp(float min, float max, float t) {
+    if(t <= 0.0f) return min;
+    else if(t >= 1.0f) return max;
+    else return min * (1.0f - t) + max * t;
+}
+
 void raw_write(const char *filename, const std::vector<uint8_t>& data) {
 	FILE *fp = fopen(filename, "wb");
 	if (fp == NULL) {
@@ -42,6 +48,19 @@ int main(int argc, char** argv) {
 
     const uint32_t w_width = 512;
     const uint32_t w_height = 512;
+
+    if(argc != 3) {
+        printf("Usage is wgen <min_altitude> <max_altitude> in meters.\n");
+        exit(0);
+    }
+
+    float min_height = atof(argv[1]);
+    float max_height = atof(argv[2]);
+
+    if(max_height < min_height) {
+        printf("<min_height> must be lower than <max_height>.\n");
+        exit(0);
+    }
 
     World world(w_width, w_height);
     world.init();
@@ -129,7 +148,7 @@ int main(int argc, char** argv) {
     unsigned error = lodepng::encode(png, image, w_width, w_height);
     if(!error) lodepng::save_file(png, "world.png");
 
-    // Exports the terrain's height map in raw format.
+    // Exports the terrain's height maps in raw format.
     const std::vector<float> altitude_buffer = world.get_altitude_buffer();
     std::vector<uint8_t> raw_heightmap;
     raw_heightmap.resize(altitude_buffer.size());
@@ -137,10 +156,14 @@ int main(int argc, char** argv) {
     for(uint32_t y = 0; y < w_height; ++y) {
         for(uint32_t x = 0; x < w_width; ++x) {
             //raw_heightmap[i] = clamp(255.0f * (altitude_buffer[i] + World::k_altitude_min) / (World::k_altitude_max + World::k_altitude_min), 0.0f, 255.0f);
-            raw_heightmap[i++] = 255.0f * clamp(world.altitude_at(y, x), 0.0f, 1.0f);
+            float altitude = lerp(min_height, max_height, world.altitude_at(y, x));
+            altitude = (altitude - min_height) / (max_height - min_height);
+            raw_heightmap[i++] = 255.0f * clamp(altitude, 0.0f, 1.0f);
         }
     }
-    raw_write("heightmap.raw", raw_heightmap);
+    uint32_t amplitude = max_height - min_height;
+    std::string heightmap_name = "heightmap_" + std::to_string(amplitude) + ".raw";
+    raw_write(heightmap_name.c_str(), raw_heightmap);
 
     // Exports the tiles/height/biomes map.
     std::vector<uint8_t> biomes_map;

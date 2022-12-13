@@ -30,6 +30,7 @@ struct World {
     World(uint32_t w_width, uint32_t w_height) {
         tiles_buffer.resize(w_width * w_height, Undefined);
         altitude_buffer.resize(w_width * w_height, 0.0f);
+        altitude_water_buffer.resize(w_width * w_height, 0.0f);
         water_buffer.resize(w_width * w_height, 0.0f);
         underground_water_buffer.resize(w_width * w_height, 0.0f);
         normals.resize(w_width * w_height);
@@ -143,6 +144,14 @@ struct World {
         }
 
         return altitude_buffer[x + y * width];
+    }
+
+    float water_altitude_at(uint32_t x, uint32_t y) const {
+        if(!is_inside(x, y)) {
+            return k_altitude_min;
+        }
+
+        return altitude_water_buffer[x + y * width];
     }
 
     float water_at(uint32_t x, uint32_t y) const {
@@ -334,7 +343,20 @@ struct World {
                             min_terrain_height = std::min(min_terrain_height, altitude_at(nx, ny));
                         }
                     }
+
                     altitude_buffer[x + y * width] = min_terrain_height;
+
+                    // Altitude of the riverbed should be displaced down to be lower the river surface.
+                    if(altitude_buffer[x + y * width] > k_lake_altitude) {
+                        altitude_buffer[x + y * width] = std::max(min_terrain_height - 0.15f, 0.0f);
+
+                        // Altitude of the water is a bit below the neighbour ground tiles.
+                        altitude_water_buffer[x + y * width] = std::max(min_terrain_height - 0.05f, 0.0f);
+                    }
+                    
+                } else {
+                    
+                    altitude_water_buffer[x + y * width] = 0.0f;
                 }
             }
         }
@@ -423,6 +445,7 @@ struct World {
 
     std::vector<Tile> tiles_buffer;
     std::vector<float> altitude_buffer;
+    std::vector<float> altitude_water_buffer;
     std::vector<float> water_buffer;
     std::vector<float> underground_water_buffer;
     std::vector<Area> areas;
