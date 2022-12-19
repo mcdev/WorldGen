@@ -6,14 +6,15 @@
 #include <cmath>
 #include <stdio.h>
 
-float lerp(float min, float max, float t) {
+static float lerp(float min, float max, float t) {
     if(t <= 0.0f) return min;
     else if(t >= 1.0f) return max;
     else return min * (1.0f - t) + max * t;
 }
 
-void raw_write(const char *filename, const std::vector<uint8_t>& data) {
-	FILE *fp = fopen(filename, "wb");
+static void raw_write(const char *filename, const std::vector<uint8_t>& data) {
+    FILE* fp;
+    fopen_s(&fp, filename, "wb");
 	if (fp == NULL) {
         return;
     }
@@ -22,12 +23,10 @@ void raw_write(const char *filename, const std::vector<uint8_t>& data) {
 	fclose(fp);
 }
 
-void tga_write(const char *filename, uint32_t width, uint32_t height, uint8_t *dataBGRA, uint8_t dataChannels=4, uint8_t fileChannels=3)
+static void tga_write(const char *filename, uint32_t width, uint32_t height, uint8_t *dataBGRA, uint8_t dataChannels=4, uint8_t fileChannels=3)
 {
 	FILE *fp = NULL;
-	// MSVC prefers fopen_s, but it's not portable
-	//fp = fopen(filename, "wb");
-	fp = fopen(filename, "wb");
+	fopen_s (&fp, filename, "wb");
 	if (fp == NULL) return;
 
 	// You can find details about TGA headers here: http://www.paulbourke.net/dataformats/tga/

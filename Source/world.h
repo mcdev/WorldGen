@@ -22,8 +22,8 @@ struct World {
     };
 
     static constexpr float k_altitude_max = 1.0f;
-    static constexpr float k_altitude_min = -0.2f;
-    static constexpr float k_lake_altitude = -0.01f;
+    static constexpr float k_altitude_min = 0.0f;
+    static constexpr float k_lake_altitude = 0.2f;
     static constexpr float k_no_water = 0.0f;
     static constexpr float k_no_slope = 0.0f;
 
@@ -56,11 +56,9 @@ struct World {
                 freq *= 2.0f;
                 float o3 = SimplexNoise::noise(freq * x / (float)width, freq * y / (float)height);
 
-                // Transforms the altitude to the range [-1, 1].
+                // Transforms the altitude to the range [0, 1].
                 float altitude = (o0 + o1 * 0.5f + o2 * 0.25f + o3 * 0.125f) / 1.625f;
                 altitude = (1.0f + altitude) * 0.5f;
-                // Transforms the altitude to the range [k_altitude_min, k_altitude_max].
-                altitude = k_altitude_min * (1.0f - altitude) + k_altitude_max * altitude;
                 altitude_buffer[x + y * width] = altitude;
 
                 // Clears the water buffer.
