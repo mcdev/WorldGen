@@ -12,6 +12,12 @@ float lerp(float min, float max, float t) {
     else return min * (1.0f - t) + max * t;
 }
 
+uint8_t raw_encode_altitude(float altitude, uint32_t min_height, uint32_t max_height) {
+    float raw_altitude = lerp(min_height, max_height, altitude);
+    raw_altitude = (raw_altitude - min_height) / (max_height - min_height);
+    return 255.0f * clamp(raw_altitude, 0.0f, 1.0f);
+}
+
 void raw_write(const char *filename, const std::vector<uint8_t>& data) {
 	FILE *fp = fopen(filename, "wb");
 	if (fp == NULL) {
@@ -152,18 +158,30 @@ int main(int argc, char** argv) {
     const std::vector<float> altitude_buffer = world.get_altitude_buffer();
     std::vector<uint8_t> raw_heightmap;
     raw_heightmap.resize(altitude_buffer.size());
+    std::vector<uint8_t> raw_heightmap_water;
+    raw_heightmap_water.resize(altitude_buffer.size());
     uint32_t i = 0;
     for(uint32_t y = 0; y < w_height; ++y) {
         for(uint32_t x = 0; x < w_width; ++x) {
-            //raw_heightmap[i] = clamp(255.0f * (altitude_buffer[i] + World::k_altitude_min) / (World::k_altitude_max + World::k_altitude_min), 0.0f, 255.0f);
+
             float altitude = lerp(min_height, max_height, world.altitude_at(y, x));
             altitude = (altitude - min_height) / (max_height - min_height);
-            raw_heightmap[i++] = 255.0f * clamp(altitude, 0.0f, 1.0f);
+            255.0f * clamp(altitude, 0.0f, 1.0f);
+            raw_heightmap[i] = raw_encode_altitude(altitude, min_height, max_height);
+
+            altitude = lerp(min_height, max_height, world.water_altitude_at(y, x));
+            altitude = (altitude - min_height) / (max_height - min_height);
+            raw_heightmap_water[i] = 255.0f * clamp(altitude, 0.0f, 1.0f);
+
+            ++i;
         }
     }
     uint32_t amplitude = max_height - min_height;
     std::string heightmap_name = "heightmap_" + std::to_string(amplitude) + ".raw";
     raw_write(heightmap_name.c_str(), raw_heightmap);
+
+    heightmap_name = "heightmap_water_" + std::to_string(amplitude) + ".raw";
+    raw_write(heightmap_name.c_str(), raw_heightmap_water);
 
     // Exports the tiles/height/biomes map.
     std::vector<uint8_t> biomes_map;
