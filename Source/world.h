@@ -14,7 +14,7 @@
 struct World {
 
     enum Tile { Soil, Rock, Water, Undefined };
-    enum Biome { Plain, Shrubland, Forest, Swamp, Rocks, Count };
+    enum Biome { Plain, Shrubland, Forest, Swamp, Rocks, Underwater, Count };
 
     struct Area {
         Biome biome;
@@ -107,6 +107,7 @@ struct World {
             case Plain: return "Plain";
             case Shrubland: return "Shrubland";
             case Swamp: return "Swamp";
+            case Underwater: return "Underwater";
             default: return "Undefined";
         }
     }
@@ -332,6 +333,7 @@ struct World {
         for(uint32_t y = 0; y < height; ++y) {
             for(uint32_t x = 0; x < width; ++x) {
                 if(at(x, y) == Water) {
+                    float ground_offset = 0.05f;
                     float min_terrain_height = altitude_at(x, y);
                     for(int32_t ny = y - 1; ny <= y + 1; ++ny) {
                         for(int32_t nx = x - 1; nx <= x + 1; ++nx) {
@@ -345,16 +347,18 @@ struct World {
                     altitude_buffer[x + y * width] = min_terrain_height;
 
                     // Altitude of the riverbed should be displaced down to be lower the river surface.
-                    if(altitude_buffer[x + y * width] > k_lake_altitude) {
-                        altitude_buffer[x + y * width] = std::max(min_terrain_height - 0.15f, 0.0f);
-
-                        // Altitude of the water is a bit below the neighbour ground tiles.
-                        altitude_water_buffer[x + y * width] = std::max(min_terrain_height - 0.05f, 0.0f);
+                    if (altitude_buffer[x + y * width] <= k_lake_altitude) {
+                        ground_offset = 0.15f;
                     }
-                    
-                } else {
-                    
-                    altitude_water_buffer[x + y * width] = 0.0f;
+
+                    altitude_buffer[x + y * width] = std::max(min_terrain_height - ground_offset, 0.0f);
+
+                    // Altitude of the water is a bit below the neighbour ground tiles.
+                    altitude_water_buffer[x + y * width] = std::max(min_terrain_height - ground_offset * 0.1f, 0.0f);
+
+                } else { 
+
+                    altitude_water_buffer[x + y * width] = std::max(altitude_at(x, y) - 0.05f, 0.0f);
                 }
             }
         }

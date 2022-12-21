@@ -6,10 +6,10 @@
 #include <cmath>
 #include <stdio.h>
 
-static float lerp(float min, float max, float t) {
-    if(t <= 0.0f) return min;
-    else if(t >= 1.0f) return max;
-    else return min * (1.0f - t) + max * t;
+uint8_t raw_encode_altitude(float altitude, float min_height, float max_height) {
+    float raw_altitude = lerp(min_height, max_height, altitude);
+    raw_altitude = (raw_altitude - min_height) / (max_height - min_height);
+    return 255.0f * clamp(raw_altitude, 0.0f, 1.0f);
 }
 
 static void raw_write(const char *filename, const std::vector<uint8_t>& data) {
@@ -60,6 +60,8 @@ int main(int argc, char** argv) {
         printf("<min_height> must be lower than <max_height>.\n");
         exit(0);
     }
+
+    printf("Generating terrain in [%f, %f]...\n", min_height, max_height);
 
     World world(w_width, w_height);
     world.init();
@@ -151,18 +153,22 @@ int main(int argc, char** argv) {
     const std::vector<float> altitude_buffer = world.get_altitude_buffer();
     std::vector<uint8_t> raw_heightmap;
     raw_heightmap.resize(altitude_buffer.size());
+    std::vector<uint8_t> raw_heightmap_water;
+    raw_heightmap_water.resize(altitude_buffer.size());
     uint32_t i = 0;
     for(uint32_t y = 0; y < w_height; ++y) {
         for(uint32_t x = 0; x < w_width; ++x) {
-            //raw_heightmap[i] = clamp(255.0f * (altitude_buffer[i] + World::k_altitude_min) / (World::k_altitude_max + World::k_altitude_min), 0.0f, 255.0f);
-            float altitude = lerp(min_height, max_height, world.altitude_at(y, x));
-            altitude = (altitude - min_height) / (max_height - min_height);
-            raw_heightmap[i++] = 255.0f * clamp(altitude, 0.0f, 1.0f);
+            raw_heightmap[i] = raw_encode_altitude(world.altitude_at(x, y), min_height, max_height);
+            raw_heightmap_water[i] = raw_encode_altitude(world.water_altitude_at(x, y), min_height, max_height);
+            ++i;
         }
     }
     uint32_t amplitude = max_height - min_height;
     std::string heightmap_name = "heightmap_" + std::to_string(amplitude) + ".raw";
     raw_write(heightmap_name.c_str(), raw_heightmap);
+
+    heightmap_name = "heightmap_water_" + std::to_string(amplitude) + ".raw";
+    raw_write(heightmap_name.c_str(), raw_heightmap_water);
 
     // Exports the tiles/height/biomes map.
     std::vector<uint8_t> biomes_map;
@@ -173,7 +179,7 @@ int main(int argc, char** argv) {
             auto tile = world.at(x, y);
             biome.r = tile;
             biome.g = raw_heightmap[y + x * w_width];
-            biome.b = area.biome;
+            biome.b = tile == World::Water ? World::Underwater : area.biome;
             biome.a = 255;
 
             biomes_map.push_back(biome.r);

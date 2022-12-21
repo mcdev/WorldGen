@@ -9,6 +9,13 @@ T clamp(T v, T min, T max) {
     return v;
 }
 
+template <class T>
+T lerp(T min, T max, float t) {
+    if (t <= 0.0f) return min;
+    else if (t >= 1.0f) return max;
+    else return min * (1.0f - t) + max * t;
+}
+
 struct Color { uint8_t r, g, b, a; };
 
 struct Vec2 { float x, y; };
