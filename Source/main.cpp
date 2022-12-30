@@ -4,6 +4,7 @@
 #include "helpers.h"
 
 #include <cmath>
+#include <map>
 #include <stdio.h>
 
 static uint8_t raw_encode_altitude(float altitude, float min_height, float max_height) {
@@ -12,9 +13,9 @@ static uint8_t raw_encode_altitude(float altitude, float min_height, float max_h
     return 255.0f * clamp(raw_altitude, 0.0f, 1.0f);
 }
 
-static void raw_write(const char *filename, const std::vector<uint8_t>& data) {
+static void raw_write(const std::string& filename, const std::vector<uint8_t>& data) {
     FILE* fp;
-    fopen_s(&fp, filename, "wb");
+    fopen_s(&fp, filename.c_str(), "wb");
 	if (fp == NULL) {
         return;
     }
@@ -23,10 +24,10 @@ static void raw_write(const char *filename, const std::vector<uint8_t>& data) {
 	fclose(fp);
 }
 
-static void tga_write(const char *filename, uint32_t width, uint32_t height, uint8_t *dataBGRA, uint8_t dataChannels=4, uint8_t fileChannels=3)
+static void tga_write(const std::string& filename, uint32_t width, uint32_t height, uint8_t *dataBGRA, uint8_t dataChannels=4, uint8_t fileChannels=3)
 {
 	FILE *fp = NULL;
-	fopen_s (&fp, filename, "wb");
+	fopen_s (&fp, filename.c_str(), "wb");
 	if (fp == NULL) return;
 
 	// You can find details about TGA headers here: http://www.paulbourke.net/dataformats/tga/
@@ -60,7 +61,55 @@ static float average_heights(const std::vector<uint8_t>& data, uint32_t width, u
     return h / count;
 }
 
-static void obj_write(const char* filename, const std::vector<uint8_t>& data, uint32_t width, uint32_t height) {
+static Vec2 average_current(const World& world, int x0, int y0, int x1, int y1) {
+
+    float count = 0.0f;
+    Vec3 h = { 0.0f, 0.0f, 0.0f };
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            h = h + world.water_current_at(y, x);
+        }
+    }
+
+    Vec2 res = h.xy();
+    if (h.z != 0.0f)
+        res /= h.z;
+
+    //res.normalize();
+
+    //res = { 1.0f, 0.0f };
+
+    return res;
+}
+
+static uint32_t translate_indice(std::map<uint32_t, uint32_t>& indices_map, uint32_t indice,
+    const std::vector<float>& vertices, std::vector<float>& new_vertices,
+    const std::vector<float>& uv0, std::vector<float>& new_uv0,
+    const std::vector<float>& normals, std::vector<float>& new_normals) {
+
+    auto ite = indices_map.find(indice);
+    if (ite != indices_map.end()) {
+        return ite->second;
+    }
+
+    uint32_t new_indice = new_vertices.size() / 3;
+    indices_map.insert(std::make_pair(indice, new_indice));
+
+    new_vertices.push_back(vertices[3 * indice + 0]);
+    new_vertices.push_back(vertices[3 * indice + 1]);
+    new_vertices.push_back(vertices[3 * indice + 2]);
+
+    new_uv0.push_back(uv0[2 * indice + 0]);
+    new_uv0.push_back(uv0[2 * indice + 1]);
+
+    new_normals.push_back(normals[3 * indice + 0]);
+    new_normals.push_back(normals[3 * indice + 1]);
+    new_normals.push_back(normals[3 * indice + 2]);
+
+    return new_indice;
+}
+
+static void obj_write(const char* filename, const std::vector<uint8_t>& data, const World& world) {
     FILE* fp;
     fopen_s(&fp, filename, "wt");
     if (fp == NULL) {
@@ -69,20 +118,20 @@ static void obj_write(const char* filename, const std::vector<uint8_t>& data, ui
 
     // Create the geometry from the height map.
     std::vector<float> vertices;
-    vertices.resize(3 * (width + 1) * (height + 1));
+    vertices.resize(3 * (world.width + 1) * (world.height + 1));
 
     std::vector<float> normals;
-    normals.resize(3 * (width + 1) * (height + 1), 0.0f);
+    normals.resize(3 * (world.width + 1) * (world.height + 1), 0.0f);
 
     std::vector<uint32_t> indices;
-    indices.resize(2 * 3 * width * height);
+    indices.resize(2 * 3 * world.width * world.height);
 
     std::vector<float> uv0;
-    uv0.resize(2 * (width + 1) * (height + 1));
+    uv0.resize(2 * (world.width + 1) * (world.height + 1));
 
     uint32_t quad = 0;
-    for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
+    for (uint32_t y = 0; y < world.height; ++y) {
+        for (uint32_t x = 0; x < world.width; ++x) {
 
             // Output vertices.
             int xl = (int)x - 1;
@@ -90,34 +139,50 @@ static void obj_write(const char* filename, const std::vector<uint8_t>& data, ui
             int ya = (int)y - 1;
             int yb = (int)y + 1;
 
-            uint32_t i0 = x + y * (width + 1);
+            uint32_t i0 = x + y * (world.width + 1);
             uint32_t i1 = i0 + 1;
-            uint32_t i3 = x + (y + 1) * (width + 1);
+            uint32_t i3 = x + (y + 1) * (world.width + 1);
             uint32_t i2 = i3 + 1;
 
-            float z0 = average_heights(data, width, height, xl, ya, x,  y);
-            vertices[3 * i0 + 0] = x / (float)width;
+            float z0 = average_heights(data, world.width, world.height, xl, ya, x,  y);
+            vertices[3 * i0 + 0] = x / (float)world.width;
             vertices[3 * i0 + 1] = z0 / 255.0f;
-            vertices[3 * i0 + 2] = y / (float)height;
+            vertices[3 * i0 + 2] = y / (float)world.height;
 
-            if (x == width - 1) {
-                float z1 = average_heights(data, width, height, x, ya, xr, y);
+            Vec2 c0 = average_current(world, xl, ya, x, y);
+            uv0[2 * i0 + 0] = c0.x;
+            uv0[2 * i0 + 1] = c0.y;
+
+            if (x == world.width - 1) {
+                float z1 = average_heights(data, world.width, world.height, x, ya, xr, y);
                 vertices[3 * i1 + 0] = 1.0f;
                 vertices[3 * i1 + 1] = z1 / 255.0f;
-                vertices[3 * i1 + 2] = y / (float)height;
+                vertices[3 * i1 + 2] = y / (float)world.height;
+
+                Vec2 c1 = average_current(world, x, ya, xr, y);
+                uv0[2 * i1 + 0] = c1.x;
+                uv0[2 * i1 + 1] = c1.y;
             }
 
-            if (y == height - 1) {
-                float z3 = average_heights(data, width, height, xl, y, x, yb);
-                vertices[3 * i3 + 0] = x / (float)width;
+            if (y == world.height - 1) {
+                float z3 = average_heights(data, world.width, world.height, xl, y, x, yb);
+                vertices[3 * i3 + 0] = x / (float)world.width;
                 vertices[3 * i3 + 1] = z3 / 255.0f;
                 vertices[3 * i3 + 2] = 1.0f;
 
-                if (x == width - 1) {
-                    float z2 = average_heights(data, width, height, x, y, xr, yb);
+                Vec2 c3 = average_current(world, xl, y, x, yb);
+                uv0[2 * i3 + 0] = c3.x;
+                uv0[2 * i3 + 1] = c3.y;
+
+                if (x == world.width - 1) {
+                    float z2 = average_heights(data, world.width, world.height, x, y, xr, yb);
                     vertices[3 * i2 + 0] = 1.0f;
                     vertices[3 * i2 + 1] = z2 / 255.0f;
                     vertices[3 * i2 + 2] = 1.0f;
+
+                    Vec2 c2 = average_current(world, x, y, xr, yb);
+                    uv0[2 * i2 + 0] = c2.x;
+                    uv0[2 * i2 + 1] = c2.y;
                 }
             }
 
@@ -128,19 +193,6 @@ static void obj_write(const char* filename, const std::vector<uint8_t>& data, ui
             indices[3 * 2 * quad + 3] = i0;
             indices[3 * 2 * quad + 4] = i2;
             indices[3 * 2 * quad + 5] = i1;
-
-            // Output texture coordinates.
-            uv0[2 * i0 + 0] = x / (float)width;
-            uv0[2 * i0 + 1] = y / (float)height;
-
-            uv0[2 * i1 + 0] = (x + 1) / (float)width;
-            uv0[2 * i1 + 1] = y / (float)height;
-
-            uv0[2 * i2 + 0] = (x + 1) / (float)width;
-            uv0[2 * i2 + 1] = (y + 1) / (float)height;
-
-            uv0[2 * i3 + 0] = x / (float)width;
-            uv0[2 * i3 + 1] = (y + 1) / (float)height;
 
             ++quad;
         }
@@ -170,7 +222,8 @@ static void obj_write(const char* filename, const std::vector<uint8_t>& data, ui
         Vec3 e01 = v1 - v0;
         Vec3 e02 = v2 - v0;
 
-        Vec3 n = normalize(cross(e01, e02));
+        Vec3 n = cross(e01, e02);
+        n.normalize();
 
         normals[3 * i0 + 0] += n.x;
         normals[3 * i0 + 1] += n.y;
@@ -185,32 +238,72 @@ static void obj_write(const char* filename, const std::vector<uint8_t>& data, ui
         normals[3 * i2 + 2] += n.z;
     }
 
-    for (uint32_t n = 0; n < normals.size(); n += 3) {
+    for (auto n = 0; n < normals.size(); n += 3) {
         Vec3 nrm { normals[n + 0], normals[n + 1], normals[n + 2] };
-        nrm = normalize(nrm);
+        nrm.normalize();
         normals[n + 0] = nrm.x;
         normals[n + 1] = nrm.y;
         normals[n + 2] = nrm.z;
     }
 
-    fprintf(fp, "# Obj file generateds by wgen.exe.\n");
+    // Remove unnecessary quads from the mesh (those under the ground).
+    std::vector<float> new_vertices;
+    std::vector<float> new_uv0;
+    std::vector<float> new_normals;
+    std::vector<uint32_t> new_indices;
+    std::map<uint32_t, uint32_t> indices_map;
+
+    for (uint32_t y = 0; y < world.height; ++y) {
+        for (uint32_t x = 0; x < world.width; ++x) {
+
+            if (world.max_water_altitude_at(y, x, 1) < world.min_altitude_at(y, x, 1)) {
+                // Skip underground quads.
+                continue;
+            }
+
+            uint32_t i0 = x + y * (world.width + 1);
+            uint32_t i1 = i0 + 1;
+            uint32_t i3 = x + (y + 1) * (world.width + 1);
+            uint32_t i2 = i3 + 1;
+
+            i0 = translate_indice(indices_map, i0, vertices, new_vertices, uv0, new_uv0, normals, new_normals);
+            i1 = translate_indice(indices_map, i1, vertices, new_vertices, uv0, new_uv0, normals, new_normals);
+            i2 = translate_indice(indices_map, i2, vertices, new_vertices, uv0, new_uv0, normals, new_normals);
+            i3 = translate_indice(indices_map, i3, vertices, new_vertices, uv0, new_uv0, normals, new_normals);
+
+            // Output triangle indices.
+            new_indices.push_back(i0);
+            new_indices.push_back(i3);
+            new_indices.push_back(i2);
+            new_indices.push_back(i0);
+            new_indices.push_back(i2);
+            new_indices.push_back(i1);
+        }
+    }
+
+    printf("%.02f%% of the water mesh has been filtered.\n", (float)(indices.size() - new_indices.size()) * 100.0f / indices.size());
+
+    fprintf(fp, "# Obj file generated by wgen.exe.\n");
 
     // Output the geometry to the file.
-    for (auto v = 0; v < vertices.size(); v += 3) {
-        fprintf(fp, "v %f %f %f\n", vertices[v + 0], vertices[v + 1], vertices[v + 2]);
+    for (auto v = 0, c = 0; v < new_vertices.size(); v += 3, c += 2) {
+        fprintf(fp, "v %f %f %f\n", new_vertices[v + 0], new_vertices[v + 1], new_vertices[v + 2]);
     }
     
-    for (auto vn = 0; vn < normals.size(); vn += 3) {
-        fprintf(fp, "vn %f %f %f\n", normals[vn + 0], normals[vn + 1], normals[vn + 2]);
+    for (auto vn = 0; vn < new_normals.size(); vn += 3) {
+        fprintf(fp, "vn %f %f %f\n", new_normals[vn + 0], new_normals[vn + 1], new_normals[vn + 2]);
     }
 
-    for (auto uv = 0; uv < uv0.size(); uv += 2) {
-        fprintf(fp, "vt %f %f\n", uv0[uv + 0], uv0[uv + 1]);
+    for (auto uv = 0; uv < new_uv0.size(); uv += 2) {
+        fprintf(fp, "vt %f %f\n", new_uv0[uv + 0], new_uv0[uv + 1]);
     }
     
     // OBJ indices start at 1.
-    for (auto i = 0; i < indices.size(); i += 3) {
-        fprintf(fp, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", 1 + indices[i + 0], 1 + indices[i + 0], 1 + indices[i + 0], 1 + indices[i + 1], 1 + indices[i + 1], 1 + indices[i + 1], 1 + indices[i + 2], 1 + indices[i + 2], 1 + indices[i + 2]);
+    for (auto i = 0; i < new_indices.size(); i += 3) {
+        fprintf(fp, "f %d/%d/%d %d/%d/%d %d/%d/%d\n", 
+            1 + new_indices[i + 0], 1 + new_indices[i + 0], 1 + new_indices[i + 0], 
+            1 + new_indices[i + 1], 1 + new_indices[i + 1], 1 + new_indices[i + 1], 
+            1 + new_indices[i + 2], 1 + new_indices[i + 2], 1 + new_indices[i + 2]);
     }
 
     fclose(fp);
@@ -262,8 +355,8 @@ int main(int argc, char** argv) {
 
             World::Tile t = world.at(x, y);
 
-            if(altitude < World::k_lake_altitude) {
-                uint8_t green = 255.0f * fabsf((altitude - World::k_altitude_min) * 1.5f);
+            if(altitude < k_lake_altitude) {
+                uint8_t green = 255.0f * fabsf((altitude - k_altitude_min) * 1.5f);
                 c_water.b = c_water.b > green ? c_water.b - green : 0;
                 c_water.g = green;
             }
@@ -279,8 +372,8 @@ int main(int argc, char** argv) {
                         break;
                     }
                     case World::Count: {
-                        c_land.r = 1.0f;
-                        c_land.g = c_land.b = 0.0f;
+                        c_land.r = 255;
+                        c_land.g = c_land.b = 0;
                         break;
                     }
                     case World::Plain: {
@@ -318,9 +411,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    const std::string k_path = "D:\\101games\\Unity\\Wild01\\Assets\\Terrains\\";
+
     std::vector<uint8_t> png;
     unsigned error = lodepng::encode(png, image, w_width, w_height);
-    if(!error) lodepng::save_file(png, "world.png");
+    if(!error) lodepng::save_file(png, k_path + "world.png");
 
     // Exports the terrain's height maps in raw format.
     const std::vector<float> altitude_buffer = world.get_altitude_buffer();
@@ -337,14 +432,14 @@ int main(int argc, char** argv) {
         }
     }
     uint32_t amplitude = max_height - min_height;
-    std::string heightmap_name = "heightmap_" + std::to_string(amplitude) + ".raw";
+    std::string heightmap_name = k_path + "heightmap_" + std::to_string(amplitude) + ".raw";
     raw_write(heightmap_name.c_str(), raw_heightmap);
 
-    heightmap_name = "heightmap_water_" + std::to_string(amplitude) + ".raw";
+    heightmap_name = k_path + "heightmap_water_" + std::to_string(amplitude) + ".raw";
     raw_write(heightmap_name.c_str(), raw_heightmap_water);
 
-    std::string obj_name = "heightmap_water_" + std::to_string(amplitude) + ".obj";
-    obj_write(obj_name.c_str(), raw_heightmap_water, w_width, w_height);
+    std::string obj_name = k_path + "heightmap_water_" + std::to_string(amplitude) + ".obj";
+    obj_write(obj_name.c_str(), raw_heightmap_water, world);
 
     // Exports the tiles/height/biomes map.
     std::vector<uint8_t> biomes_map;
@@ -364,7 +459,10 @@ int main(int argc, char** argv) {
             biomes_map.push_back(biome.a);
         }
     }
-    raw_write("biomes.bytes", biomes_map);
+    raw_write(k_path + "biomes.bytes", biomes_map);
+
+    printf("Hit ENTER to quit.\n");
+    //getc(stdin);
 
     return 0;
 }

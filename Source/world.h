@@ -5,11 +5,22 @@
 #include "randgen.h"
 #include "SimplexNoise.h"
 
+#include "Eigen/Dense"
+
 #include <stdlib.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+
+const float k_altitude_max = 1.0f;
+const float k_altitude_min = 0.0f;
+const float k_lake_altitude = 0.2f;
+const float k_no_water = 0.0f;
+const float k_no_slope = 0.0f;
+const Vec3 k_default_current = { 0.0f, 0.0f, 0.0f };
+const Vec3 k_no_gradient = { 0.0f, 0.0f, 0.0f };
+const Vec3 k_default_normal = { 0.0f, 0.0f, 1.0f };
 
 struct World {
 
@@ -21,32 +32,28 @@ struct World {
         Vec2 center;
     };
 
-    static constexpr float k_altitude_max = 1.0f;
-    static constexpr float k_altitude_min = 0.0f;
-    static constexpr float k_lake_altitude = 0.2f;
-    static constexpr float k_no_water = 0.0f;
-    static constexpr float k_no_slope = 0.0f;
-
-    World(uint32_t w_width, uint32_t w_height) {
+    World(int32_t w_width, int32_t w_height) {
         tiles_buffer.resize(w_width * w_height, Undefined);
         altitude_buffer.resize(w_width * w_height, 0.0f);
         altitude_water_buffer.resize(w_width * w_height, 0.0f);
         water_buffer.resize(w_width * w_height, 0.0f);
+        water_current_buffer.resize(w_width * w_height * 3, 0.0f);
         underground_water_buffer.resize(w_width * w_height, 0.0f);
         normals.resize(w_width * w_height);
-        width = w_width;
-        height = w_height;
+        width = clamp(w_width, 0, 4096);
+        height = clamp(w_height, 0, 4096);
     }
 
     void init() {
         // Randomly initialize the world.
-        for(uint32_t y = 0; y < height; ++y) {
-            for(uint32_t x = 0; x < width; ++x) {
 
-                // Clears the map with Land everywhere.
+        for(int32_t y = 0; y < height; ++y) {
+            for(int32_t x = 0; x < width; ++x) {
+
+                // Clear the map with Land everywhere.
                 tiles_buffer[x + y * width] = Soil;
 
-                // Computes the tile altitude (using simplex noise).
+                // Compute the tile altitude (using simplex noise).
                 float freq = 1.7f;
                 float o0 = SimplexNoise::noise(freq * x / (float)width, freq * y / (float)height);
                 freq *= 2.0f;
@@ -56,19 +63,24 @@ struct World {
                 freq *= 2.0f;
                 float o3 = SimplexNoise::noise(freq * x / (float)width, freq * y / (float)height);
 
-                // Transforms the altitude to the range [0, 1].
+                // Transform the altitude to the range [0, 1].
                 float altitude = (o0 + o1 * 0.5f + o2 * 0.25f + o3 * 0.125f) / 1.625f;
                 altitude = (1.0f + altitude) * 0.5f;
                 altitude_buffer[x + y * width] = altitude;
 
-                // Clears the water buffer.
+                // Clear the water buffer.
                 water_buffer[x + y * width] = 0.0f;
+
+                // Set default (small) current everywhere.
+                water_current_buffer[3 * (x + y * width) + 0] -= k_default_current.x;
+                water_current_buffer[3 * (x + y * width) + 1] -= k_default_current.y;
+                water_current_buffer[3 * (x + y * width) + 2] += k_default_current.z;
             }
         }
 
-        // Computes terrain's normals.
-        for(uint32_t y = 0; y < height; ++y) {
-            for(uint32_t x = 0; x < width; ++x) {
+        // Compute terrain's normals.
+        for(int32_t y = 0; y < height; ++y) {
+            for(int32_t x = 0; x < width; ++x) {
 
                 float altitude = altitude_at(x, y);
                 float dhx = altitude_at(x + 1, y) - altitude;
@@ -92,10 +104,6 @@ struct World {
                 normal.z /= norm;
 
                 normals[x + y * width] = normal;
-
-                // if(altitude > 0.25f && normal.z < 0.707f) {
-                //     tiles_buffer[x + y * width] = Rock;
-                // }
             }
         }
     }
@@ -120,60 +128,182 @@ struct World {
         return true;
     }
 
-    Tile at(uint32_t x, uint32_t y) const {
-        if(!is_inside(x, y)) {
-            return Undefined;
-        }
+    void clip(int32_t& x, int32_t& y) const {
+        x = clamp(x, 0, width - 1);
+        y = clamp(y, 0, height- 1);
+    }
 
+    Tile at(int32_t x, int32_t y) const {
+        clip(x, y);
         return tiles_buffer[x + y * width];
     }
 
-    Tile& at(uint32_t x, uint32_t y) {
-        static Tile g_tile_undefined = Undefined;
-        if(!is_inside(x, y)) {
-            return g_tile_undefined;
-        }
-
+    Tile& at(int32_t x, int32_t y) {
+        clip(x, y);
         return tiles_buffer[x + y * width];
     }
 
-    float altitude_at(uint32_t x, uint32_t y) const {
-        if(!is_inside(x, y)) {
-            return k_altitude_max;
-        }
-
+    float altitude_at(int32_t x, int32_t y) const {
+        clip(x, y);
         return altitude_buffer[x + y * width];
     }
 
-    float water_altitude_at(uint32_t x, uint32_t y) const {
-        if(!is_inside(x, y)) {
-            return k_altitude_min;
-        }
+    float average_altitude_at(int32_t x, int32_t y, int32_t radius) const {
+        float res = 0.0f;
 
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+            
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+                
+                int32_t cx = x + dx;
+
+                clip(cx, cy);
+                res += altitude_at(cx, cy);
+            }
+        }
+        return res / ((2 * radius + 1) * (2 * radius + 1));
+    }
+
+    float min_altitude_at(int32_t x, int32_t y, int32_t radius = 0) const {
+        float res = k_altitude_max;
+
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+            
+            int32_t cy = y + dy;
+            
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+            
+                int32_t cx = x + dx;
+                clip(cx, cy);
+                res = std::min(res, altitude_at(cx, cy));
+            }
+        }
+        return res;
+    }
+
+    float max_altitude_at(int32_t x, int32_t y, int32_t radius = 0) const {
+        float res = k_altitude_min;
+
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+            
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+                
+                int32_t cx = x + dx;
+                clip(cx, cy);
+                res = std::max(res, altitude_at(cx, cy));
+            }
+        }
+        return res;
+    }
+
+    float water_altitude_at(int32_t x, int32_t y) const {
+        clip(x, y);
         return altitude_water_buffer[x + y * width];
     }
 
-    float water_at(uint32_t x, uint32_t y) const {
-        if(!is_inside(x, y)) {
-            return k_no_water;
-        }
+    float average_water_altitude_at(int32_t x, int32_t y, int32_t radius) const {
+        float res = 0.0f;
 
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+            
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+                
+                int32_t cx = x + dx;
+                clip(cx, cy);
+                res += water_altitude_at(cx, cy);
+            }
+        }
+        return res / ((2 * radius + 1) * (2 * radius + 1));
+    }
+
+    float min_water_altitude_at(int32_t x, int32_t y, int32_t radius = 0) const {
+        float res = k_altitude_max;
+
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+            
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+                int32_t cx = x + dx;
+                clip(cx, cy);
+                res = std::min(res, water_altitude_at(cx, cy));
+            }
+        }
+        return res;
+    }
+
+    float max_water_altitude_at(int32_t x, int32_t y, int32_t radius = 0) const {
+        float res = k_altitude_min;
+
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+            
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+                int32_t cx = x + dx;
+                clip(cx, cy);
+                res = std::max(res, water_altitude_at(cx, cy));
+            }
+        }
+        return res;
+    }
+
+    float water_at(int32_t x, int32_t y) const {
+        clip(x, y);
         return water_buffer[x + y * width];
     }
 
-    float underground_water_at(uint32_t x, uint32_t y) const {
-        if(!is_inside(x, y)) {
-            return k_no_water;
+    Vec3 water_current_at(int32_t x, int32_t y) const {
+        clip(x, y);
+        return { water_current_buffer[3 * (x + y * width) + 0], water_current_buffer[3 * (x + y * width) + 1], water_current_buffer[3 * (x + y * width) + 2] };
+    }
+
+    float average_waterbed_altitude_at(int32_t x, int32_t y, int32_t radius) const {
+        
+        float res = 0.0f;
+        int32_t count = 0;
+
+        for (int32_t dy = -radius; dy <= radius; ++dy) {
+
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; ++dx) {
+
+                int32_t cx = x + dx;
+                clip(cx, cy);
+
+                if (at(cx, cy) != Water) {
+                    continue;
+                }
+
+                Vec3 normal = normal_at(cx, cy);
+                float slope = dot(normal, z_axis);
+
+                //if (slope > 0.95f) {
+                //    continue;
+                //}
+
+                res += average_altitude_at(cx, cy, 3);
+                ++count;
+            }
         }
 
+        return count > 0 ? res / count : k_lake_altitude;
+    }
+
+    float underground_water_at(int32_t x, int32_t y) const {
+        clip(x, y);
         return underground_water_buffer[x + y * width];
     }
 
-    float slope_at(uint32_t x, uint32_t y) const {
-
-        if(!is_inside(x, y)) {
-            return k_no_slope;
-        }
+    float slope_at(int32_t x, int32_t y) const {
+        clip(x, y);
 
         float slope = 0.0f;
         float altitude = altitude_at(x, y);
@@ -188,17 +318,74 @@ struct World {
         return slope * 0.125f * 1000.0f;
     }
 
-    const Vec3& normal_at(uint32_t x, uint32_t y) const {
-        if(!is_inside(x, y)) {
-            static constexpr Vec3 k_no_normal = { 0.0f, 0.0f, 0.0f };
-            return k_no_normal;
+    std::pair<Vec3, Vec3> best_plane_from_points(const std::vector<Vec3>& c)
+    {
+        // Copy coordinates to  matrix in Eigen format.
+        size_t num_points = c.size();
+
+        if (num_points == 0) {
+            return std::make_pair(zero3, k_default_normal);
         }
 
+        Eigen::Matrix< float, Eigen::Dynamic, Eigen::Dynamic > coord(3, num_points);
+        for (size_t i = 0; i < num_points; ++i) {
+            coord.col(i)(0) = c[i].x;
+            coord.col(i)(1) = c[i].y;
+            coord.col(i)(2) = c[i].z;
+        }
+
+        // Calculate centroid.
+        Vec3 centroid(coord.row(0).mean(), coord.row(1).mean(), coord.row(2).mean());
+
+        // Subtract centroid.
+        coord.row(0).array() -= centroid.x; coord.row(1).array() -= centroid.y; coord.row(2).array() -= centroid.z;
+
+        // We only need the left-singular matrix here.
+        // http://math.stackexchange.com/questions/99299/best-fitting-plane-given-a-set-of-points
+        auto svd = coord.jacobiSvd(Eigen::ComputeThinU | Eigen::ComputeThinV);
+        Vec3 plane_normal;
+        plane_normal.x = svd.matrixU().rightCols<1>()(0);
+        plane_normal.y = svd.matrixU().rightCols<1>()(1);
+        plane_normal.z = svd.matrixU().rightCols<1>()(2);
+        return std::make_pair(centroid, plane_normal);
+    }
+
+    void best_plane_at(int32_t x, int32_t y, int32_t radius, Vec3& normal, Vec3& point) {
+
+        // Collect points.
+        std::vector<Vec3> points;
+        for (int32_t dy = -radius; dy <= radius; dy += radius) {
+
+            int32_t cy = y + dy;
+
+            for (int32_t dx = -radius; dx <= radius; dx += radius) {
+                int32_t cx = x + dx;
+        
+                //if (water_at(cx, cy) == 1.0f) {
+                //    continue;
+                //}
+                clip(cx, cy);
+
+                Vec3 pt;
+                pt.x = dx;
+                pt.y = dy;
+                pt.z = altitude_at(cx, cy) * 36.0f;
+                points.push_back(pt);
+            }
+        }
+        
+        std::pair<Vec3, Vec3> plane = best_plane_from_points(points);
+        point = plane.first;
+        normal = plane.second;
+    }
+
+    const Vec3& normal_at(int32_t x, int32_t y) const {
+        clip(x, y);
         return normals[x + y * width];
     }
 
     template<Tile T>
-    uint32_t count_neighbours_of_type(uint32_t x, uint32_t y) const {
+    uint32_t count_neighbours_of_type(int32_t x, int32_t y) const {
 
         uint32_t res = 0;
 
@@ -227,50 +414,103 @@ struct World {
         return res;
     }
 
+    Vec2 water_gradient_at(int32_t x, int32_t y, int32_t radius = 1) {
+
+        static const Vec2 dir[] = {
+            { -0.707f, -0.707f },
+            { +0.000f, -1.000f },
+            { +0.707f, -0.707f },
+            { -1.000f, +0.000f },
+            { +1.000f, +0.000f },
+            { -0.707f, +0.707f },
+            { +0.000f, +1.000f },
+            { +0.707f, +0.707f },
+        };
+
+        static const Vec2 offset[] = {
+            { -1, -1},
+            { +0, -1 },
+            { +1, -1 },
+            { -1, +0 },
+            { +1, +0 },
+            { -1, +1 },
+            { +0, +1 },
+            { +1, +1 },
+        };
+
+        // Compute the gradient vector.
+        Vec2 gradient = zero2;
+        auto altitude = water_altitude_at(x, y);
+
+        for (auto d = 0; d < 8; ++d) {
+            int32_t cx = x + offset[d].x * radius;
+            int32_t cy = y + offset[d].y * radius;
+            if (water_at(cx, cy) != 1.0f) {
+                continue;
+            }
+            float z_diff = water_altitude_at(cx, cy) - altitude;
+            gradient += dir[d] * z_diff;
+        }
+
+        return gradient;
+    }
+
     void compute_rivers_and_lakes() {
 
         printf("Computing rivers and lakes...\n");
 
-        const size_t drops_count = 80;
+        const uint32_t drops_count = 80;
         std::array<float, 8> gradient;
-        for(size_t d = 0; d < drops_count; ++d) {
-            printf("\r%lu%%", d * 100 / drops_count);
+        
+        Vec2 dir[] = {
+            { -0.707f, -0.707f },
+            { +0.000f, -1.000f },
+            { +0.707f, -0.707f },
+            { -1.000f, +0.000f },
+            { +1.000f, +0.000f },
+            { -0.707f, +0.707f },
+            { +0.000f, +1.000f },
+            { +0.707f, +0.707f },
+        };
+
+        printf("Computing water flow...\n");
+        for(uint32_t d = 0; d < drops_count; ++d) {
+            printf("\r%d%%", d * 100 / drops_count);
             fflush(NULL);
 
             int32_t x = rand() % width;
             int32_t y = rand() % height;
 
+            Vec3 current = k_default_current;
             while(is_inside(x, y)) {
 
                 auto altitude = altitude_at(x, y);
 
-                // Computes the flow direction's pdf.
+                // Compute the flow direction's pdf.
+                const float k_min_alt_diff = 0.001f;
                 float pdf = 0.0f;
-                gradient[0] = clamp(altitude - altitude_at(x - 1, y - 1), 0.0f, 1.0f);
+                gradient[0] = remap(altitude - altitude_at(x - 1, y - 1), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[0];
-                gradient[1] = clamp(altitude - altitude_at(x, y - 1), 0.0f, 1.0f);
+                gradient[1] = remap(altitude - altitude_at(x    , y - 1), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[1];
-                gradient[2] = clamp(altitude - altitude_at(x + 1, y - 1), 0.0f, 1.0f);
+                gradient[2] = remap(altitude - altitude_at(x + 1, y - 1), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[2];
-                gradient[3] = clamp(altitude - altitude_at(x - 1, y), 0.0f, 1.0f);
+                gradient[3] = remap(altitude - altitude_at(x - 1, y    ), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[3];
-                gradient[4] = clamp(altitude - altitude_at(x + 1, y), 0.0f, 1.0f);
+                gradient[4] = remap(altitude - altitude_at(x + 1, y    ), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[4];
-                gradient[5] = clamp(altitude - altitude_at(x - 1, y + 1), 0.0f, 1.0f);
+                gradient[5] = remap(altitude - altitude_at(x - 1, y + 1), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[5];
-                gradient[6] = clamp(altitude - altitude_at(x, y + 1), 0.0f, 1.0f);
+                gradient[6] = remap(altitude - altitude_at(x    , y + 1), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[6];
-                gradient[7] = clamp(altitude - altitude_at(x + 1, y + 1), 0.0f, 1.0f);
+                gradient[7] = remap(altitude - altitude_at(x + 1, y + 1), k_min_alt_diff, 1.0f, 0.0f, 1.0f);
                 pdf += gradient[7];
-
-                if(pdf == 0.0f) 
-                    break;
 
                 for(size_t g = 0; g < 8; ++g) {
                     gradient[g] /= pdf;
                 }
 
-                // Selects a neighbour based on the pdf.
+                // Select a neighbour based on the pdf.
                 float r = rand() / (float)RAND_MAX;
                 float prob = 0.0f;
                 size_t g = 0;
@@ -286,21 +526,42 @@ struct World {
 
                 water_buffer[x + y * width] = 1.0f;
 
-                // Moves to the selected neighbour.
+                // Compute the selected neighbour coordinates.
                 switch(g) {
-                    case 0: x -= 1; y -= 1; break;
-                    case 1: y -= 1; break;
-                    case 2: x += 1; y -= 1; break;
-                    case 3: x -= 1; break;
-                    case 4: x += 1; break;
-                    case 5: x -= 1; y += 1; break;
-                    case 6: y -= 1; break;
-                    case 7: x += 1; y += 1; break;
+                    case 0: 
+                        x -= 1; 
+                        y -= 1; 
+                        break;
+                    case 1: 
+                        y -= 1; 
+                        break;
+                    case 2: 
+                        x += 1; 
+                        y -= 1; 
+                        break;
+                    case 3: 
+                        x -= 1; 
+                        break;
+                    case 4: 
+                        x += 1; 
+                        break;
+                    case 5: 
+                        x -= 1; 
+                        y += 1; 
+                        break;
+                    case 6: 
+                        y += 1; 
+                        break;
+                    case 7: 
+                        x += 1; 
+                        y += 1; 
+                        break;
                 }
             }
         }
+        printf("\r100%%\ndone!\n");
 
-        // Sets the Water tiles.
+        // Set the Water tiles.
         for(size_t i = 0; i < water_buffer.size(); ++i) {
 
             // Lakes (and ponds).
@@ -313,10 +574,11 @@ struct World {
             }
         }
 
-        // Dilates the water where needed (to avoid isolated water tiles).
+        // Dilate the water where needed (to avoid isolated water tiles).
+        printf("Removing small islands...\n");
         auto new_tiles = tiles_buffer;
-        for(uint32_t y = 0; y < height; ++y) {
-            for(uint32_t x = 0; x < width; ++x) {
+        for(int32_t y = 0; y < height; ++y) {
+            for(int32_t x = 0; x < width; ++x) {
                 new_tiles[x + y * width] = at(x, y);
                 if(new_tiles[x + y * width] != Water) {
                     if(count_neighbours_of_type<Water>(x, y) >= 2) {
@@ -328,10 +590,10 @@ struct World {
         }
         tiles_buffer = new_tiles;
 
-        // Process the water tiles' heights to ensure that they are never higher
-        // in altitude than their non-water tiles.
-        for(uint32_t y = 0; y < height; ++y) {
-            for(uint32_t x = 0; x < width; ++x) {
+        // Erode the terrain where water is present.
+        printf("Eroding the terrain...\n");
+        for(int32_t y = 0; y < height; ++y) {
+            for(int32_t x = 0; x < width; ++x) {
                 if(at(x, y) == Water) {
                     float ground_offset = 0.05f;
                     float min_terrain_height = altitude_at(x, y);
@@ -346,7 +608,7 @@ struct World {
 
                     altitude_buffer[x + y * width] = min_terrain_height;
 
-                    // Altitude of the riverbed should be displaced down to be lower the river surface.
+                    // Altitude of the riverbed should be displaced down to be lower than the river surface.
                     if (altitude_buffer[x + y * width] <= k_lake_altitude) {
                         ground_offset = 0.15f;
                     }
@@ -363,12 +625,86 @@ struct World {
             }
         }
 
-        // Propagates water through the ground.
+        // Compute the water surface.
+        printf("Computing water surface...\n");
+        for (int32_t y = 0; y < height; ++y) {
+            for (int32_t x = 0; x < width; ++x) {
+                if (at(x, y) != Water) {
+                    // Skip non water tiles.
+                    continue;
+                }
+
+                //altitude_water_buffer[x + y * width] = average_waterbed_altitude_at(x, y, 2);
+                altitude_water_buffer[x + y * width] = std::max(k_lake_altitude, std::max(altitude_at(x, y), average_waterbed_altitude_at(x, y, 5)) + normal_at(x, y).z * 0.0f);
+            }
+        }
+
+        // Compute the water current.
+        printf("Computing water current...\n");
+        for (int32_t y = 0; y < height; ++y) {
+            for (int32_t x = 0; x < width; ++x) {
+                if (water_at(x, y) != 1.0f) {
+                    // Skip non water tiles.
+                    continue;
+                }
+
+                // Compute the gradient at the current location.
+                Vec3 gradient = water_gradient_at(x, y, 2);
+
+                // If no gradient, try with a bigger radius.
+                if (gradient.length() == 0.0f) {
+                    gradient = water_gradient_at(x, y, 8);
+                }
+
+                // If still no gradient (large flat water surface case), fallback to a noise-based flow map.
+                if (gradient.length() == 0.0f) {
+                    float freq = 16.0f;
+                    float angle = 1.57f * SimplexNoise::noise(freq * x / (float)width, freq * y / (float)height);
+                    gradient = { cos(angle) * 0.02f, sin(angle) * 0.02f, 0.0f };
+                }
+
+                gradient *= 100.0f;
+
+                water_current_buffer[3 * (x + y * width) + 0] = -gradient.x;
+                water_current_buffer[3 * (x + y * width) + 1] = -gradient.y;
+                water_current_buffer[3 * (x + y * width) + 2] = 1.0f;
+            }
+        }
+
+        bool blur_current = true;
+        if (blur_current) {
+            printf("Blurring water current...\n");
+
+            // Blur the current vectors to make them smoother.
+            std::vector<float> c_in, c_out;
+            c_in.resize(water_current_buffer.size() / 3);
+            c_out.resize(water_current_buffer.size() / 3);
+
+            for (auto i = 0; i < c_in.size(); ++i) {
+                c_in[i] = water_current_buffer[3 * i + 0];
+            }
+            auto src = c_in.data();
+            auto dst = c_out.data();
+            Blur::fast_gaussian_blur(src, dst, width, height, 1.0f);
+            for (auto i = 0; i < c_in.size(); ++i) {
+                water_current_buffer[3 * i + 0] = c_out[i];
+            }
+
+            for (auto i = 0; i < c_in.size(); ++i) {
+                c_in[i] = water_current_buffer[3 * i + 1];
+            }
+            src = c_in.data();
+            dst = c_out.data();
+            Blur::fast_gaussian_blur(src, dst, width, height, 1.0f);
+            for (auto i = 0; i < c_in.size(); ++i) {
+                water_current_buffer[3 * i + 1] = c_out[i];
+            }
+        }
+
+        // Propagate water through the ground.
         auto in = water_buffer.data();
         auto out = underground_water_buffer.data();
         Blur::fast_gaussian_blur(in, out, width, height, 13.0f);
-
-        printf("\r100%%\ndone!\n");
     }
 
     void compute_areas(size_t count) {
@@ -422,7 +758,7 @@ struct World {
         printf("%lu areas have been generated.\n", areas.size());
     }
 
-    const Area& get_area(uint32_t x, uint32_t y) const {
+    const Area& get_area(int32_t x, int32_t y) const {
         static Area g_null_area = { Plain, { 0.f, 0.f} };
         if(areas.empty()) {
             return g_null_area;
@@ -449,8 +785,9 @@ struct World {
     std::vector<float> altitude_buffer;
     std::vector<float> altitude_water_buffer;
     std::vector<float> water_buffer;
+    std::vector<float> water_current_buffer;
     std::vector<float> underground_water_buffer;
     std::vector<Area> areas;
     std::vector<Vec3> normals;
-    uint32_t width, height;
+    int32_t width, height;
 };
