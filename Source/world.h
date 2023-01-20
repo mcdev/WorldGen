@@ -318,10 +318,33 @@ struct World {
         return slope * 0.125f * 1000.0f;
     }
 
-    std::pair<Vec3, Vec3> best_plane_from_points(const std::vector<Vec3>& c)
+    //std::pair<Vec3, Vec3> best_line_from_points(const std::vector<Vec3>& points)
+    //{
+    //    // Copy coordinates to  matrix in Eigen format.
+    //    size_t num_points = points.size();
+    //    Eigen::Matrix< float, Eigen::Dynamic, Eigen::Dynamic > centers(num_points, 3);
+    //    for (size_t i = 0; i < num_points; ++i) {
+    //        centers.row(i)(0) = points[i].x;
+    //        centers.row(i)(1) = points[i].y;
+    //        centers.row(i)(2) = points[i].z;
+    //    }
+
+    //    Eigen::Vector3f origin = centers.colwise().mean();
+    //    Eigen::MatrixXd centered = centers.rowwise() - origin.transpose();
+    //    Eigen::MatrixXd cov = centered.adjoint() * centered;
+    //    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(cov);
+    //    Vec3 axis;
+    //    axis.x = eig.eigenvectors().col(2).normalized()(0);
+    //    axis.y = eig.eigenvectors().col(2).normalized()(1);
+    //    axis.z = eig.eigenvectors().col(2).normalized()(2);
+
+    //    return std::make_pair( Vec3(origin(0), origin(1), origin(2)), axis);
+    //}
+
+    std::pair<Vec3, Vec3> best_plane_from_points(const std::vector<Vec3>& points)
     {
         // Copy coordinates to  matrix in Eigen format.
-        size_t num_points = c.size();
+        size_t num_points = points.size();
 
         if (num_points == 0) {
             return std::make_pair(zero3, k_default_normal);
@@ -329,9 +352,9 @@ struct World {
 
         Eigen::Matrix< float, Eigen::Dynamic, Eigen::Dynamic > coord(3, num_points);
         for (size_t i = 0; i < num_points; ++i) {
-            coord.col(i)(0) = c[i].x;
-            coord.col(i)(1) = c[i].y;
-            coord.col(i)(2) = c[i].z;
+            coord.col(i)(0) = points[i].x;
+            coord.col(i)(1) = points[i].y;
+            coord.col(i)(2) = points[i].z;
         }
 
         // Calculate centroid.
@@ -360,10 +383,6 @@ struct World {
 
             for (int32_t dx = -radius; dx <= radius; dx += radius) {
                 int32_t cx = x + dx;
-        
-                //if (water_at(cx, cy) == 1.0f) {
-                //    continue;
-                //}
                 clip(cx, cy);
 
                 Vec3 pt;
@@ -673,6 +692,8 @@ struct World {
 
         bool blur_current = true;
         if (blur_current) {
+            const float blur_radius = 3.0f;
+
             printf("Blurring water current...\n");
 
             // Blur the current vectors to make them smoother.
@@ -685,7 +706,7 @@ struct World {
             }
             auto src = c_in.data();
             auto dst = c_out.data();
-            Blur::fast_gaussian_blur(src, dst, width, height, 1.0f);
+            Blur::fast_gaussian_blur(src, dst, width, height, blur_radius);
             for (auto i = 0; i < c_in.size(); ++i) {
                 water_current_buffer[3 * i + 0] = c_out[i];
             }
@@ -695,7 +716,7 @@ struct World {
             }
             src = c_in.data();
             dst = c_out.data();
-            Blur::fast_gaussian_blur(src, dst, width, height, 1.0f);
+            Blur::fast_gaussian_blur(src, dst, width, height, blur_radius);
             for (auto i = 0; i < c_in.size(); ++i) {
                 water_current_buffer[3 * i + 1] = c_out[i];
             }

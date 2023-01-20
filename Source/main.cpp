@@ -63,7 +63,6 @@ static float average_heights(const std::vector<uint8_t>& data, uint32_t width, u
 
 static Vec2 average_current(const World& world, int x0, int y0, int x1, int y1) {
 
-    float count = 0.0f;
     Vec3 h = { 0.0f, 0.0f, 0.0f };
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {
@@ -74,10 +73,6 @@ static Vec2 average_current(const World& world, int x0, int y0, int x1, int y1) 
     Vec2 res = h.xy();
     if (h.z != 0.0f)
         res /= h.z;
-
-    //res.normalize();
-
-    //res = { 1.0f, 0.0f };
 
     return res;
 }
